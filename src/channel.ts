@@ -10,7 +10,6 @@ import {
   type ChannelPlugin,
 } from "openclaw/plugin-sdk";
 
-import WebSocket from "ws";
 import { IMSocket, SessionState } from "@kookapp/im-socket";
 
 import { getKookRuntime } from "./runtime.js";
@@ -290,7 +289,7 @@ async function monitorKookWebSocket(opts: {
     token: `Bot ${botToken}`,
     gatewayURL: "https://www.kookapp.cn",
     compress: 0,
-    createSocket: (url: string) => new WebSocket(url) as any,
+    createSocket: (url: string) => new globalThis.WebSocket(url) as any,
     gatewayProvider: async () => {
       const res = await fetch(
         "https://www.kookapp.cn/api/v3/gateway/index?compress=0",

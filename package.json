@@ -1,6 +1,6 @@
 {
   "name": "@kookapp/openclaw-kook",
-  "version": "1.0.5-alpha.0",
+  "version": "1.0.5-alpha.1",
   "description": "Kook channel plugin for OpenClaw",
   "type": "module",
   "main": "index.ts",
@@ -61,8 +61,7 @@
     "openclaw": ">=2026.1.0"
   },
   "dependencies": {
-    "@kookapp/im-socket": "0.0.1",
-    "ws": "^8.19.0",
+    "@kookapp/im-socket": "0.0.2",
     "zod": "^3.24.1"
   }
 }
