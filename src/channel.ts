@@ -10,18 +10,12 @@ import {
   type ChannelPlugin,
 } from "openclaw/plugin-sdk";
 
+import WebSocket from "ws";
+import { IMSocket, SessionState } from "@kookapp/im-socket";
+
 import { getKookRuntime } from "./runtime.js";
 import type { KookConfig } from "./types.js";
 import { probeKookAccount } from "./probe.js";
-
-// 动态加载 WebSocket
-let wsModule: typeof import("ws") | null = null;
-async function getWs(): Promise<typeof import("ws").default> {
-  if (!wsModule) {
-    wsModule = await import("ws");
-  }
-  return wsModule.default;
-}
 
 function normalizeAllowEntry(entry: string): string {
   return entry.trim().replace(/^(kook|user):/i, "").toLowerCase();
@@ -148,47 +142,12 @@ async function monitorKookWebSocket(opts: {
 }): Promise<void> {
   const { botToken, accountId, abortSignal, onStatus, log } = opts;
 
-  // 状态常量
-  const STATUS_INIT = 0;
-  const STATUS_GATEWAY = 10;
-  const STATUS_WS_CONNECTED = 20;
-  const STATUS_CONNECTED = 30;
-  const STATUS_RETRY = 40;
-
-  let currentStatus = STATUS_INIT;
-  let gatewayUrl = "";
-  let sessionId = "";
-  let selfUserId = ""; // 机器人自己的用户ID
-  let maxSn = 0;
-  const messageQueue = new Map<number, unknown>();
-  let ws: InstanceType<typeof import("ws").default> | null = null;
-  let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-  let reconnectAttempts = 0;
-  const maxReconnectAttempts = 5;
+  let selfUserId = "";
 
   const updateStatus = (patch: Record<string, unknown>) => {
     onStatus(patch);
   };
 
-  const setStatus = (status: number) => {
-    currentStatus = status;
-    updateStatus({ running: status === STATUS_CONNECTED });
-    log(`Kook status: ${status}`);
-  };
-
-  // 获取 Gateway
-  const getGateway = async (): Promise<string> => {
-    const response = await fetch("https://www.kookapp.cn/api/v3/gateway/index?compress=0", {
-      headers: { Authorization: `Bot ${botToken}` },
-    });
-    const data = await response.json();
-    if (data.code !== 0) {
-      throw new Error(`Failed to get gateway: ${data.message}`);
-    }
-    return data.data.url;
-  };
-
-  // 获取机器人自己的用户 ID
   const getSelfUserId = async (): Promise<string> => {
     const response = await fetch("https://www.kookapp.cn/api/v3/user/me", {
       headers: { Authorization: `Bot ${botToken}` },
@@ -201,66 +160,6 @@ async function monitorKookWebSocket(opts: {
     return String(data.data.id ?? "");
   };
 
-  // 解析消息
-  const parseMessage = (data: Buffer): { s: number; d?: Record<string, unknown>; sn?: number } | null => {
-    try {
-      return JSON.parse(data.toString());
-    } catch {
-      return null;
-    }
-  };
-
-  // 处理消息
-  const handleMessage = async (msg: { s: number; d?: Record<string, unknown>; sn?: number }) => {
-    const { s, d, sn } = msg;
-
-    switch (s) {
-      case 0: // EVENT - 消息事件
-        if (sn !== undefined) {
-          messageQueue.set(sn, msg);
-          // 按顺序处理消息
-          while (messageQueue.has(maxSn + 1)) {
-            maxSn++;
-            const queuedMsg = messageQueue.get(maxSn);
-            messageQueue.delete(maxSn);
-            await processEvent(queuedMsg as { d: Record<string, unknown> });
-          }
-        }
-        break;
-
-      case 1: // HELLO - 握手结果
-        const code = d?.code as number ?? 40100;
-        if (code === 0) {
-          sessionId = (d?.session_id as string) ?? "";
-          // selfUserId = String(d?.user_id ?? "");
-          log(`Kook connected, session: ${sessionId}`);
-          setStatus(STATUS_CONNECTED);
-          startHeartbeat();
-        } else {
-          log(`Kook hello failed: ${code}`);
-          if ([40100, 40101, 40102, 40103].includes(code)) {
-            setStatus(STATUS_INIT);
-          }
-        }
-        break;
-
-      case 3: // PONG - 心跳响应
-        log("Kook pong received");
-        break;
-
-      case 5: // RECONNECT - 服务端要求重连
-        log("Kook reconnect requested");
-        handleReconnect();
-        break;
-
-      case 6: // RESUME ACK - Resume 成功
-        log("Kook resume successful");
-        setStatus(STATUS_CONNECTED);
-        break;
-    }
-  };
-
-  // 处理事件消息
   const processEvent = async (event: { d: Record<string, unknown> }) => {
     const data = event.d;
     const channelType = data.channel_type as string;
@@ -272,12 +171,10 @@ async function monitorKookWebSocket(opts: {
     const extra = data.extra as Record<string, unknown>;
 
     const {
-      // type,
       code,
       guild_id,
       guild_type,
       channel_name,
-      // author,
       visible_only,
       mention,
       mention_no_at,
@@ -293,20 +190,15 @@ async function monitorKookWebSocket(opts: {
       send_msg_device
     } = extra;
 
-    // 只处理 @自己的消息
-    if (mention != selfUserId) return
-    // 跳过系统消息
+    if (mention != selfUserId) return;
     if (type === 255) return;
-    // 跳过自己发的消息
     if (authorId === selfUserId) return;
-    // 只处理文本消息
     if (type !== 1 && type !== 9) return;
 
     const runtime = getKookRuntime();
     const cfg = runtime.config.loadConfig();
     const account = resolveKookAccount({ cfg });
 
-    // 安全检查：如果配置了 allowedUserId，只允许该用户的消息
     if (account.allowedUserId && account.allowedUserId.trim()) {
       if (authorId !== account.allowedUserId.trim()) {
         log(`Message from ${authorId} rejected: not in allowedUserId (${account.allowedUserId})`);
@@ -321,7 +213,6 @@ async function monitorKookWebSocket(opts: {
     const bodyText = content.trim();
     if (!bodyText) return;
 
-    // 权限检查
     const groupPolicy = (account.config.groupPolicy as string) ?? "allowlist";
     if (chatType !== "direct" && groupPolicy === "allowlist") {
       // 简化：允许所有消息
@@ -345,7 +236,6 @@ async function monitorKookWebSocket(opts: {
     const sessionKey = route.sessionKey;
     const to = chatType === "direct" ? `user:${authorId}` : `channel:${targetId}`;
 
-    // 构建消息上下文
     const ctxPayload = runtime.channel.reply.finalizeInboundContext({
       Body: `${bodyText}\n[kook message id: ${msgId} channel: ${targetId}]`,
       RawBody: bodyText,
@@ -364,7 +254,6 @@ async function monitorKookWebSocket(opts: {
       Timestamp: data.msg_timestamp as number,
     });
 
-    // 创建回复分发器
     const { dispatcher, replyOptions, markDispatchIdle } =
       runtime.channel.reply.createReplyDispatcherWithTyping({
         responsePrefix: "",
@@ -382,7 +271,6 @@ async function monitorKookWebSocket(opts: {
         },
       });
 
-    // 派发回复
     await runtime.channel.reply.dispatchReplyFromConfig({
       ctx: ctxPayload,
       cfg,
@@ -394,149 +282,60 @@ async function monitorKookWebSocket(opts: {
     updateStatus({ lastInboundAt: Date.now() });
   };
 
-  // 开始心跳
-  const startHeartbeat = () => {
-    if (heartbeatInterval) clearInterval(heartbeatInterval);
-    heartbeatInterval = setInterval(() => {
-      if (ws && ws.readyState === 1 && currentStatus === STATUS_CONNECTED) {
-        ws.send(JSON.stringify({ s: 2, sn: maxSn }));
+  // 获取机器人自身 ID
+  selfUserId = await getSelfUserId();
+  log(`Kook self user ID: ${selfUserId}`);
+
+  const transport = new IMSocket({
+    token: `Bot ${botToken}`,
+    gatewayURL: "https://www.kookapp.cn",
+    compress: 0,
+    createSocket: (url: string) => new WebSocket(url) as any,
+    gatewayProvider: async () => {
+      const res = await fetch(
+        "https://www.kookapp.cn/api/v3/gateway/index?compress=0",
+        { headers: { Authorization: `Bot ${botToken}` } },
+      );
+      const json = await res.json();
+      if (json.code !== 0) {
+        throw new Error(`Failed to get gateway: ${json.message}`);
       }
-    }, 30000);
-  };
+      return { url: json.data.url };
+    },
+    logger: {
+      log: (...args: unknown[]) => log("[im-socket]", ...args),
+      warn: (...args: unknown[]) => log("[im-socket][warn]", ...args),
+      error: (...args: unknown[]) => log("[im-socket][error]", ...args),
+    },
+  });
 
-  // 停止心跳
-  const stopHeartbeat = () => {
-    if (heartbeatInterval) {
-      clearInterval(heartbeatInterval);
-      heartbeatInterval = null;
-    }
-  };
+  transport.on("message", (frame: { s: number; sn: number; d: Record<string, unknown> }) => {
+    processEvent(frame);
+  });
 
-  // 处理重连
-  const handleReconnect = () => {
-    stopHeartbeat();
-    if (ws) {
-      ws.close();
-      ws = null;
-    }
-    messageQueue.clear();
-    maxSn = 0;
-    sessionId = "";
-    gatewayUrl = "";
-    setStatus(STATUS_INIT);
-  };
+  transport.on("statechange", ({ from, to }: { from: string; to: string }) => {
+    updateStatus({ running: to === SessionState.connected });
+    log(`Kook state: ${from} -> ${to}`);
+  });
 
-  // 连接 WebSocket
-  const connect = async (resume = false): Promise<void> => {
-    const WS = await getWs();
-    
-    // gatewayUrl 本身已包含 token，不要重复添加
-    const url = new URL(gatewayUrl);
-    url.searchParams.set("compress", "0");
-    if (resume && sessionId) {
-      url.searchParams.set("resume", "1");
-      url.searchParams.set("sn", String(maxSn));
-      url.searchParams.set("session_id", sessionId);
-    }
+  transport.on("reconnect", () => {
+    log("Kook server requested reconnect");
+  });
 
-    ws = new WS(url.toString());
+  transport.on("error", (err: unknown) => {
+    log(`Kook transport error: ${err}`);
+  });
 
-    const abortHandler = () => ws?.close();
-    abortSignal?.addEventListener("abort", abortHandler, { once: true });
-
-    return await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        ws?.close();
-        reject(new Error("WebSocket connection timeout"));
-      }, 10000);
-
-      ws.on("open", () => {
-        clearTimeout(timeout);
-        setStatus(STATUS_WS_CONNECTED);
-        log(`Kook WebSocket ${resume ? "resumed" : "connected"}`);
-      });
-
-      ws.on("message", async (data) => {
-        const msg = parseMessage(data as Buffer);
-        if (msg) {
-          await handleMessage(msg);
-        }
-      });
-
-      ws.on("close", () => {
-        abortSignal?.removeEventListener("abort", abortHandler);
-        stopHeartbeat();
-        resolve();
-      });
-
-      ws.on("error", (err) => {
-        clearTimeout(timeout);
-        reject(err);
-      });
-    });
-  };
-
-  // 主循环
-  const mainLoop = async () => {
-    // 先获取机器人自己的用户 ID
-    selfUserId = await getSelfUserId();
-    log(`Kook self user ID: ${selfUserId}`);
-
-    while (!abortSignal?.aborted) {
-      try {
-        if (currentStatus === STATUS_INIT) {
-          gatewayUrl = await getGateway();
-          setStatus(STATUS_GATEWAY);
-        }
-
-        if (currentStatus === STATUS_GATEWAY) {
-          try {
-            await connect(false);
-          } catch (err) {
-            log(`Kook connect error: ${err}`);
-            reconnectAttempts++;
-          }
-        }
-
-        if (abortSignal?.aborted) break;
-
-        // 等待断开
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-
-        // 重连逻辑
-        if (currentStatus !== STATUS_CONNECTED && reconnectAttempts < maxReconnectAttempts) {
-          if (sessionId) {
-            try {
-              await connect(true);
-            } catch (err) {
-              log(`Kook resume error: ${err}`);
-            }
-          }
-        }
-
-        if (reconnectAttempts >= maxReconnectAttempts) {
-          reconnectAttempts = 0;
-          sessionId = "";
-          gatewayUrl = "";
-          setStatus(STATUS_INIT);
-        }
-      } catch (err) {
-        log(`Kook main loop error: ${err}`);
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-      }
-    }
-
-    // 清理
-    stopHeartbeat();
-    if (ws) ws.close();
-    updateStatus({ running: false, lastStopAt: Date.now() });
-  };
-
-  // 启动
-  setStatus(STATUS_INIT);
   updateStatus({ lastStartAt: Date.now(), running: true });
   log(`Kook provider started for account: ${accountId}`);
-  mainLoop();
+  transport.start();
+
+  if (abortSignal) {
+    abortSignal.addEventListener("abort", () => {
+      transport.stop();
+      updateStatus({ running: false, lastStopAt: Date.now() });
+    }, { once: true });
+  }
 }
 
 export const kookPlugin: ChannelPlugin<ResolvedKookAccount> = {
