@@ -94,38 +94,64 @@ function resolveDefaultKookAccountId(cfg: OpenClawConfig): string {
 async function sendMessageKook(
   targetId: string,
   content: string,
+  guildId?: string,
+  isDirect: boolean = false,
 ): Promise<{ ok: boolean; messageId?: string }> {
   const runtime = getKookRuntime();
   const config = runtime.config.loadConfig();
   const account = resolveKookAccount({ cfg: config });
   const token = account.token?.trim();
 
+  const log = runtime.log || console.log.bind(console, "[kook]");
+
+  log(`[sendMessageKook] targetId=${targetId}, guildId=${guildId}, isDirect=${isDirect}, content length=${content.length}`);
+
   if (!token) {
+    log(`[sendMessageKook] ERROR: No token found`);
     throw new Error("Kook token is required");
   }
 
+  const requestBody: Record<string, unknown> = {
+    target_id: targetId,
+    content,
+    type: isDirect ? 1 : 9,  // 私聊用纯文本(1)，频道用 kmarkdown(9)
+  };
+
+  // 只有频道消息才需要 guild_id
+  if (guildId && !isDirect) {
+    requestBody.guild_id = guildId;
+  }
+
   try {
-    const response = await fetch("https://www.kookapp.cn/api/v3/message/create", {
+    log(`[sendMessageKook] Calling KOOK API with body:`, JSON.stringify(requestBody, null, 2));
+    
+    // 私聊和频道都使用各自的 API endpoint
+    const apiEndpoint = isDirect 
+      ? "https://www.kookapp.cn/api/v3/direct-message/create"  // 私聊消息 API
+      : "https://www.kookapp.cn/api/v3/message/create";        // 频道消息 API
+    
+    log(`[sendMessageKook] Using endpoint: ${apiEndpoint}`);
+    
+    const response = await fetch(apiEndpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bot ${token}`,
       },
-      body: JSON.stringify({
-        target_id: targetId,
-        content,
-        type: 9,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     const data = await response.json();
+    log(`[sendMessageKook] API response:`, JSON.stringify(data, null, 2));
 
     if (data.code === 0) {
       return { ok: true, messageId: data.data.msg_id };
     }
 
+    log(`[sendMessageKook] ERROR: API returned non-zero code: ${data.code}, message: ${data.message}`);
     return { ok: false };
   } catch (error) {
+    log(`[sendMessageKook] EXCEPTION: ${error}`);
     throw new Error(`Failed to send Kook message: ${error}`);
   }
 }
@@ -168,6 +194,10 @@ async function monitorKookWebSocket(opts: {
     const content = data.content as string;
     const msgId = data.msg_id as string;
     const extra = data.extra as Record<string, unknown>;
+    
+    // 调试日志
+    log(`[DEBUG] KOOK event: channelType=${channelType}, type=${type}, authorId=${authorId}, content=${content?.substring(0, 50)}...`);
+    log(`[DEBUG] extra object:`, JSON.stringify(extra, null, 2));
 
     const {
       code,
@@ -189,17 +219,30 @@ async function monitorKookWebSocket(opts: {
       send_msg_device
     } = extra;
 
-    if (mention != selfUserId) return;
-    if (type === 255) return;
-    if (authorId === selfUserId) return;
-    if (type !== 1 && type !== 9) return;
+    if (channelType !== "PERSON" && mention != selfUserId) {
+      log(`Skipping event: mention (${mention}) does not match selfUserId (${selfUserId}).`);
+      return;
+    }
+    if (type === 255) {
+      log(`Skipping event: type is 255 (system message).`);
+      return;
+    }
+    if (authorId === selfUserId) {
+      log(`Skipping event: authorId (${authorId}) is selfUserId.`);
+      return;
+    }
+    if (type !== 1 && type !== 9) {
+      log(`Skipping event: type (${type}) is not 1 (text) or 9 (kmarkdown).`);
+      return;
+    }
 
     const runtime = getKookRuntime();
     const cfg = runtime.config.loadConfig();
     const account = resolveKookAccount({ cfg });
 
     if (account.allowedUserId && account.allowedUserId.trim()) {
-      if (authorId !== account.allowedUserId.trim()) {
+      const allowedIds = account.allowedUserId.split(',').map(id => id.trim());
+      if (!allowedIds.includes(authorId)) {
         log(`Message from ${authorId} rejected: not in allowedUserId (${account.allowedUserId})`);
         return;
       }
@@ -259,10 +302,16 @@ async function monitorKookWebSocket(opts: {
         humanDelay: runtime.channel.reply.resolveHumanDelayConfig(cfg, route.agentId),
         deliver: async (payload: ReplyPayload) => {
           const text = payload.text ?? "";
+          const isDirect = chatType === "direct";
+          log(`[DELIVER] Preparing to send reply, text length: ${text.length}, guild_id: ${guild_id}, isDirect: ${isDirect}`);
           const chunks = text.match(/.{1,2000}/g) ?? [text];
+          log(`[DELIVER] Split into ${chunks.length} chunks`);
           for (const chunk of chunks) {
             if (!chunk) continue;
-            await sendMessageKook(to.replace(/^(user|channel):/, ""), chunk);
+            const cleanTo = to.replace(/^(user|channel):/, "");
+            log(`[DELIVER] Sending chunk to ${cleanTo}, chunk length: ${chunk.length}`);
+            await sendMessageKook(cleanTo, chunk, guild_id as string, isDirect);
+            log(`[DELIVER] Chunk sent successfully`);
           }
         },
         onError: (err, info) => {
@@ -461,11 +510,13 @@ export const kookPlugin: ChannelPlugin<ResolvedKookAccount> = {
       return { ok: true, to: trimmed };
     },
     sendText: async ({ to, text }) => {
-      const result = await sendMessageKook(to, text);
+      const cleanTo = to.replace(/^(user|channel):/, "");
+      const result = await sendMessageKook(cleanTo, text);
       return { channel: "kook", ...result };
     },
     sendMedia: async ({ to, text, mediaUrl }) => {
-      const result = await sendMessageKook(to, text || mediaUrl);
+      const cleanTo = to.replace(/^(user|channel):/, "");
+      const result = await sendMessageKook(cleanTo, text || mediaUrl);
       return { channel: "kook", ...result };
     },
   },
