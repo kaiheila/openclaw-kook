@@ -1,14 +1,7 @@
-import type { PluginRuntime } from "openclaw/plugin-sdk";
+import { createPluginRuntimeStore } from 'openclaw/plugin-sdk'
+import type { PluginRuntime } from 'openclaw/plugin-sdk'
 
-let runtime: PluginRuntime | null = null;
+const { setRuntime: setKookRuntime, getRuntime: getKookRuntime, tryGetRuntime: tryGetKookRuntime } =
+  createPluginRuntimeStore<PluginRuntime>('KOOK runtime not initialized')
 
-export function setKookRuntime(next: PluginRuntime) {
-  runtime = next;
-}
-
-export function getKookRuntime(): PluginRuntime {
-  if (!runtime) {
-    throw new Error("Kook runtime not initialized");
-  }
-  return runtime;
-}
+export { getKookRuntime, setKookRuntime, tryGetKookRuntime }
