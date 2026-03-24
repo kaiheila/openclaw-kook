@@ -1,7 +1,4 @@
-import type {
-  ChannelGatewayAdapter,
-  ChannelGatewayContext,
-} from 'openclaw/plugin-sdk'
+import type { ChannelGatewayAdapter, ChannelGatewayContext } from 'openclaw/plugin-sdk'
 import { DEFAULT_GROUP_HISTORY_LIMIT } from 'openclaw/plugin-sdk'
 
 import { KookClient, KWSStates } from '@kookapp/js-sdk'
@@ -62,9 +59,9 @@ export const kookGatewayAdapter: ChannelGatewayAdapter<KookAccount> = {
     const groupHistories = new Map<string, HistoryEntry[]>()
     const historyLimit = Math.max(
       0,
-      (cfg as any).channels?.kook?.historyLimit
-        ?? (cfg as any).messages?.groupChat?.historyLimit
-        ?? DEFAULT_GROUP_HISTORY_LIMIT,
+      (cfg as any).channels?.kook?.historyLimit ??
+        (cfg as any).messages?.groupChat?.historyLimit ??
+        DEFAULT_GROUP_HISTORY_LIMIT,
     )
 
     // Connect to KOOK
