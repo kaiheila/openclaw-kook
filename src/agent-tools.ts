@@ -67,7 +67,24 @@ async function handleUploadAsset(
   return api.uploadAsset(formData as any)
 }
 
-const AVAILABLE_ACTIONS = [...Object.keys(ACTION_MAP), 'upload_asset'].join(', ')
+// raw_request — allows the agent to call any KOOK API endpoint.
+// Auth (Bot token) is auto-injected by RestClient.
+async function handleRawRequest(
+  api: RestClient,
+  params: {
+    method?: string
+    path: string
+    body?: Record<string, unknown>
+    query?: Record<string, string>
+  },
+): Promise<any> {
+  if (!params.path) throw new Error('params.path is required for raw_request')
+  const method = (params.method ?? 'GET').toUpperCase() as 'GET' | 'POST' | 'PUT' | 'DELETE'
+  const payload = method === 'GET' ? params.query : { ...params.query, ...params.body }
+  return api.request(params.path, method, payload)
+}
+
+const AVAILABLE_ACTIONS = [...Object.keys(ACTION_MAP), 'upload_asset', 'raw_request'].join(', ')
 
 const kookPlatformSchema = Type.Object({
   action: Type.String({
@@ -108,7 +125,7 @@ export function createKookPlatformToolFactory(): ToolFactory {
         }
 
         const handler = ACTION_MAP[args.action]
-        if (!handler && args.action !== 'upload_asset') {
+        if (!handler && args.action !== 'upload_asset' && args.action !== 'raw_request') {
           return {
             content: [{
               type: 'text' as const,
@@ -119,9 +136,15 @@ export function createKookPlatformToolFactory(): ToolFactory {
         }
 
         try {
-          const result = args.action === 'upload_asset'
-            ? await handleUploadAsset(client.api, args.params ?? {})
-            : await handler(client.api, args.params ?? {})
+          let result: any
+
+          if (args.action === 'raw_request') {
+            result = await handleRawRequest(client.api, args.params ?? {})
+          } else if (args.action === 'upload_asset') {
+            result = await handleUploadAsset(client.api, args.params ?? {})
+          } else {
+            result = await handler(client.api, args.params ?? {})
+          }
 
           if (!result.success) {
             return {

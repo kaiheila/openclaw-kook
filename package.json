@@ -1,6 +1,6 @@
 {
   "name": "@kookapp/openclaw-kook",
-  "version": "1.1.0-beta.1",
+  "version": "1.1.0-beta.2",
   "description": "Kook channel plugin for OpenClaw",
   "type": "module",
   "main": "index.ts",

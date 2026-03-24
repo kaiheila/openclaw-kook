@@ -76,4 +76,10 @@ Button example (in action-group): \`{ "type":"button", "theme":"primary", "value
 
 **Asset (资源)**
 - \`upload_asset\` — params: path (required, local file path), filename? — returns { url } (KOOK CDN URL)
+
+**Raw Request (自定义请求)**
+- \`raw_request\` — params: method (GET/POST/PUT/DELETE), path (required, e.g. "/api/v3/guild/list"), body?, query?
+  - Auth header (\`Bot token\`) is auto-injected — do NOT include tokens in params.
+  - All KOOK Bot open API endpoints are under \`/api/v3/\`. Response: \`{ code, message, data }\`, \`code === 0\` means success.
+  - Use this for any KOOK API endpoint not covered by the named actions above.
 `
