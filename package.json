@@ -61,8 +61,11 @@
   },
   "homepage": "https://github.com/kaiheila/openclaw-kook",
   "dependencies": {
-    "@kookapp/js-sdk": "^0.1.0",
+    "@kookapp/js-sdk": "^0.1.2",
     "@sinclair/typebox": "^0.34.0"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.23"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

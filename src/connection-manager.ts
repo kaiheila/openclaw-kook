@@ -1,5 +1,5 @@
-import type { ChannelGatewayAdapter, ChannelGatewayContext } from 'openclaw/plugin-sdk'
-import { DEFAULT_GROUP_HISTORY_LIMIT } from 'openclaw/plugin-sdk'
+import type { ChannelGatewayAdapter, ChannelGatewayContext } from 'openclaw/plugin-sdk/channel-runtime'
+import { DEFAULT_GROUP_HISTORY_LIMIT } from 'openclaw/plugin-sdk/reply-history'
 
 import { KookClient, KWSStates } from '@kookapp/js-sdk'
 
@@ -88,7 +88,7 @@ export const kookGatewayAdapter: ChannelGatewayAdapter<KookAccount> = {
     // Create send service (after connect so botName is available)
     const sendService = createSendService(client, botName)
 
-    log?.info?.(`KOOK bot connected as ${botName} (${botUserId})`)
+    log?.info?.(`I am ${botName} (userId=${botUserId})`)
 
     ctx.setStatus({
       accountId,
@@ -100,6 +100,20 @@ export const kookGatewayAdapter: ChannelGatewayAdapter<KookAccount> = {
       name: botName,
     })
 
+    const isUserInTrustedGuilds = async (userId: string, guildIds: string[]) => {
+      for (const guildId of guildIds) {
+        try {
+          const result = await client.api.getUser({ user_id: userId, guild_id: guildId })
+          if (result.success && result.data) {
+            return true
+          }
+        } catch {
+          // Ignore lookup failures and continue checking remaining guilds.
+        }
+      }
+      return false
+    }
+
     // Create inbound handler
     const handler = createInboundHandler({
       cfg,
@@ -110,7 +124,10 @@ export const kookGatewayAdapter: ChannelGatewayAdapter<KookAccount> = {
       groupHistories,
       historyLimit,
       acceptBotMessage: account.acceptBotMessage,
+      dmPolicy: account.dmPolicy,
+      allowFrom: account.allowFrom,
       trustedGuilds: account.trustedGuilds,
+      isUserInTrustedGuilds,
       deliverReply: sendService.sendKMarkdown.bind(sendService),
       deliverCardReply: sendService.sendCard.bind(sendService),
       createStreamingCard: sendService.createStreamingCard.bind(sendService),

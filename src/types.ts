@@ -1,8 +1,15 @@
+import { isExperimentalFeaturesEnabled } from './beta'
+
+export type KookDmPolicy = 'pairing' | 'allowlist' | 'open' | 'disabled'
+
 export interface KookChannelConfig {
-  botToken: string
+  botAuth?: string
+  botToken?: string
   enabled?: boolean
   baseUrl?: string
   logLevel?: string
+  dmPolicy?: KookDmPolicy
+  allowFrom?: string[]
   trustedGuilds?: string[]
   acceptBotMessage?: boolean
 }
@@ -12,6 +19,8 @@ export interface KookAccount {
   enabled: boolean
   baseUrl: string
   logLevel: string
+  dmPolicy: KookDmPolicy
+  allowFrom: string[]
   trustedGuilds: string[]
   acceptBotMessage: boolean
 }
@@ -30,13 +39,16 @@ export function resolveKookConfig(cfg: any, accountId?: string | null): KookChan
 
 export function resolveKookAccount(cfg: any, accountId?: string | null): KookAccount {
   const raw = resolveKookConfig(cfg, accountId)
+  const betaEnabled = isExperimentalFeaturesEnabled()
 
   return {
-    botToken: raw.botToken ?? '',
+    botToken: raw.botAuth ?? raw.botToken ?? '',
     enabled: raw.enabled !== false,
     baseUrl: raw.baseUrl ?? 'https://www.kookapp.cn',
     logLevel: raw.logLevel ?? 'info',
-    trustedGuilds: raw.trustedGuilds ?? [],
+    dmPolicy: raw.dmPolicy ?? 'open',
+    allowFrom: raw.allowFrom ?? [],
+    trustedGuilds: betaEnabled ? (raw.trustedGuilds ?? []) : [],
     acceptBotMessage: raw.acceptBotMessage !== false,
   }
 }
@@ -49,7 +61,7 @@ export function listKookAccountIds(cfg: any): string[] {
     return Object.keys(section.accounts)
   }
 
-  if (section.botToken) {
+  if (section.botAuth || section.botToken) {
     return ['default']
   }
 

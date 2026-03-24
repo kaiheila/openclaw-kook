@@ -2,16 +2,17 @@ import type {
   ChannelPlugin,
   ChannelMeta,
   ChannelCapabilities,
-  ChannelConfigSchema,
   ChannelGroupAdapter,
   ChannelMentionAdapter,
   ChannelMessagingAdapter,
   ChannelOutboundAdapter,
   ChannelOutboundContext,
-} from 'openclaw/plugin-sdk'
+} from 'openclaw/plugin-sdk/channel-runtime'
+import type { ChannelConfigSchema } from 'openclaw/plugin-sdk'
 
 import { CardBuilder } from '@kookapp/js-sdk'
 
+import { isExperimentalFeaturesEnabled } from './beta'
 import type { KookAccount } from './types'
 import { kookConfigAdapter } from './config'
 import { kookGatewayAdapter, getActiveClient } from './connection-manager'
@@ -21,38 +22,56 @@ import { kookStatusAdapter } from './status'
 import type { KookProbe } from './status'
 import { formatKMarkdown, stripKookMentions } from './message-utils'
 
+const betaEnabled = isExperimentalFeaturesEnabled()
+
+const kookChannelSchemaProperties: Record<string, unknown> = {
+  enabled: { type: 'boolean', description: '是否启用 KOOK 频道' },
+  botAuth: {
+    type: 'string',
+    description:
+      'KOOK 机器人 Token。可访问 https://developer.kookapp.cn/bot/ 在 KOOK 开发者中心创建机器人，并在机器人配置页的 Token / Bot Token 区域获取。',
+  },
+  baseUrl: { type: 'string', description: 'KOOK API 地址（默认: https://www.kookapp.cn）' },
+  dmPolicy: {
+    type: 'string',
+    enum: ['pairing', 'allowlist', 'open', 'disabled'],
+    description: '私信访问策略',
+  },
+  allowFrom: {
+    type: 'array',
+    items: { type: 'string' },
+    description: '允许的发送者 ID 列表（kook:userId 格式），为空则允许所有人',
+  },
+  acceptBotMessage: {
+    type: 'boolean',
+    description: '是否接收其他机器人的消息并加入上下文（默认: true，不影响自身消息过滤）',
+  },
+}
+
+if (betaEnabled) {
+  kookChannelSchemaProperties.trustedGuilds = {
+    type: 'array',
+    items: { type: 'string' },
+    description: '信任的服务器 ID 列表，其中的所有成员自动视为 allowFrom 的一员',
+  }
+}
+
+const kookChannelUiHints: NonNullable<ChannelConfigSchema['uiHints']> = {
+  botAuth: { label: 'Bot Token' },
+  ...(betaEnabled
+    ? {
+        trustedGuilds: { advanced: true },
+      }
+    : {}),
+}
+
 const kookChannelConfigSchema: ChannelConfigSchema = {
   schema: {
     type: 'object',
-    properties: {
-      enabled: { type: 'boolean', description: '是否启用 KOOK 频道' },
-      botToken: { type: 'string', description: 'KOOK 机器人 Token' },
-      baseUrl: { type: 'string', description: 'KOOK API 地址（默认: https://www.kookapp.cn）' },
-      dmPolicy: {
-        type: 'string',
-        enum: ['pairing', 'allowlist', 'open', 'disabled'],
-        description: '私信访问策略',
-      },
-      allowFrom: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '允许的发送者 ID 列表（kook:userId 格式），为空则允许所有人',
-      },
-      trustedGuilds: {
-        type: 'array',
-        items: { type: 'string' },
-        description: '信任的服务器 ID 列表，其中的所有成员自动视为 allowFrom 的一员',
-      },
-      acceptBotMessage: {
-        type: 'boolean',
-        description: '是否接收其他机器人的消息并加入上下文（默认: true，不影响自身消息过滤）',
-      },
-    },
+    properties: kookChannelSchemaProperties,
     additionalProperties: false,
   },
-  uiHints: {
-    botToken: { sensitive: true },
-  },
+  uiHints: kookChannelUiHints,
 }
 
 const kookMeta: ChannelMeta = {

@@ -1,9 +1,9 @@
 import type {
   ChannelDirectoryAdapter,
   ChannelDirectoryEntry,
-  OpenClawConfig,
-  RuntimeEnv,
-} from 'openclaw/plugin-sdk'
+} from 'openclaw/plugin-sdk/channel-runtime'
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/core'
+import type { RuntimeEnv } from 'openclaw/plugin-sdk/runtime-env'
 
 import { getActiveClient } from './connection-manager'
 

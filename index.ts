@@ -1,5 +1,5 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi } from 'openclaw/plugin-sdk/core'
+import { emptyPluginConfigSchema } from 'openclaw/plugin-sdk/core'
 
 import { createKookPlatformToolFactory } from "./src/agent-tools.js";
 import { kookPlugin } from "./src/channel.js";

@@ -1,9 +1,12 @@
-import type { ChannelLogSink, OpenClawConfig, ReplyPayload } from 'openclaw/plugin-sdk'
+import type { ChannelLogSink } from 'openclaw/plugin-sdk/channel-runtime'
+import { readStoreAllowFromForDmPolicy, resolveDmGroupAccessWithLists } from 'openclaw/plugin-sdk/channel-policy'
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/core'
+import type { ReplyPayload } from 'openclaw/plugin-sdk/reply-runtime'
 import {
   buildPendingHistoryContextFromMap,
   clearHistoryEntriesIfEnabled,
   recordPendingHistoryEntryIfEnabled,
-} from 'openclaw/plugin-sdk'
+} from 'openclaw/plugin-sdk/reply-history'
 
 import type { KEvent, KTextChannelExtra } from '@kookapp/js-sdk'
 import { extractContent, isExplicitlyMentioningBot } from '@kookapp/js-sdk'
@@ -29,14 +32,29 @@ interface InboundHandlerDeps {
   groupHistories: Map<string, HistoryEntry[]>
   historyLimit: number
   acceptBotMessage: boolean
+  dmPolicy: 'pairing' | 'allowlist' | 'open' | 'disabled'
+  allowFrom: string[]
   trustedGuilds: string[]
+  isUserInTrustedGuilds: (userId: string, guildIds: string[]) => Promise<boolean>
   deliverReply: (channelId: string, text: string, replyToId?: string) => Promise<void>
   deliverCardReply: (channelId: string, cardJson: string, replyToId?: string) => Promise<void>
   createStreamingCard: (channelId: string, replyToId?: string) => StreamingCardType
 }
 
 export function createInboundHandler(deps: InboundHandlerDeps) {
-  const { cfg, botUserId, accountId, log, groupHistories, historyLimit, acceptBotMessage } = deps
+  const {
+    cfg,
+    botUserId,
+    accountId,
+    log,
+    groupHistories,
+    historyLimit,
+    acceptBotMessage,
+    dmPolicy,
+    allowFrom,
+    trustedGuilds,
+    isUserInTrustedGuilds,
+  } = deps
 
   return async function handleTextChannelEvent(event: KEvent<KTextChannelExtra>) {
     try {
@@ -71,29 +89,65 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
 
     // --- Plugin-level slash command interception ---
     // Handle commands locally before passing to OpenClaw
+    // In groups, commands require @mention just like normal messages
     const trimmedBody = body.trim()
+    const replyTargetId = event.target_id
     const pluginCommand = parsePluginCommand(trimmedBody)
-    if (pluginCommand) {
-      const channelId = event.channel_type === 'PERSON' ? undefined : event.target_id
-      if (channelId) {
-        try {
-          await handlePluginCommand(pluginCommand, {
-            runtime,
-            deps,
-            event,
-            channelId,
-            chatType,
-            accountId,
-          })
-        } catch (err) {
-          log?.error?.(`Plugin command error: ${err}`)
-        }
+    if (pluginCommand && (!isGroup || mentioned)) {
+      try {
+        await handlePluginCommand(pluginCommand, {
+          runtime,
+          deps,
+          event,
+          channelId: replyTargetId,
+          chatType,
+          accountId,
+        })
+      } catch (err) {
+        log?.error?.(`Plugin command error: ${err}`)
       }
       return // Do NOT forward to OpenClaw
     }
 
     // History key: channelId (all messages in the same KOOK channel share context)
     const historyKey = isGroup ? event.target_id : ''
+
+    if (!isGroup) {
+      const storeAllowFrom =
+        dmPolicy === 'pairing'
+          ? await readStoreAllowFromForDmPolicy({
+              provider: 'kook',
+              accountId,
+              dmPolicy,
+            })
+          : []
+
+      const trustedGuildAllowed =
+        trustedGuilds.length > 0 ? await isUserInTrustedGuilds(event.author_id, trustedGuilds) : false
+      const effectiveAllowFrom = trustedGuildAllowed ? [...allowFrom, `kook:${event.author_id}`, event.author_id] : allowFrom
+
+      const access = resolveDmGroupAccessWithLists({
+        isGroup: false,
+        dmPolicy,
+        allowFrom: effectiveAllowFrom,
+        storeAllowFrom,
+        groupAllowFromFallbackToAllowFrom: false,
+        isSenderAllowed: (entries) => entries.includes(`kook:${event.author_id}`) || entries.includes(event.author_id),
+      })
+
+      if (access.decision !== 'allow') {
+        const denialText =
+          access.decision === 'pairing'
+            ? '当前私信访问策略需要先配对/授权，请先将你的 KOOK 用户 ID 加入 channels.kook.allowFrom。'
+            : '当前私信访问策略不允许该会话访问。'
+        try {
+          await deps.deliverReply(replyTargetId, denialText, event.msg_id)
+        } catch (err) {
+          log?.error?.(`Failed to deliver DM policy response: ${err}`)
+        }
+        return
+      }
+    }
 
     // For groups, check mention gating
     if (isGroup) {
@@ -257,7 +311,7 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
     }
 
     // Streaming card for incremental updates
-    const channelId = event.channel_type === 'PERSON' ? undefined : event.target_id
+    const channelId = replyTargetId
 
     const state: { streamingCard: StreamingCardType | null } = { streamingCard: null }
 
