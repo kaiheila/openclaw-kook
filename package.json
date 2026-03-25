@@ -63,7 +63,6 @@
   "dependencies": {
     "@kookapp/js-sdk": "^0.1.2",
     "@sinclair/typebox": "^0.34.0",
-    "//": " OpenClaw requires ajv and they didn't depend it explicitly.",
     "ajv": "^8.18.0"
   },
   "peerDependencies": {
