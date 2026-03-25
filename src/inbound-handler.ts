@@ -18,7 +18,7 @@ import { extractContent, isExplicitlyMentioningBot } from '@kookapp/js-sdk'
 
 import { buildMsgContext } from './message-utils'
 import { formatKMarkdown } from './message-utils'
-import { resolveKookDmAccess } from './access-control'
+import { resolveKookAccess } from './access-control'
 import { getKookRuntime } from './runtime'
 import type { StreamingMessageHandle } from './send-service'
 import type { SendTarget } from './send-service'
@@ -102,77 +102,62 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
     const senderName = event.extra?.author?.nickname ?? event.extra?.author?.username ?? event.author_id
 
     const body = extractContent(event)
-
-    // --- Plugin-level slash command interception ---
-    // Handle commands locally before passing to OpenClaw
-    // In groups, commands require @mention just like normal messages
     const trimmedBody = body.trim()
     const pluginCommand = parsePluginCommand(trimmedBody)
-    if (pluginCommand && (!isGroup || mentioned)) {
-      try {
-        await handlePluginCommand(pluginCommand, {
-          runtime,
-          deps,
-          event,
-          replyTarget,
-          chatType,
-          accountId,
-        })
-      } catch (err) {
-        log?.error?.(`Plugin command error: ${err}`)
-      }
-      return // Do NOT forward to OpenClaw
-    }
 
     // History key: channelId (all messages in the same KOOK channel share context)
     const historyKey = isGroup ? event.target_id : ''
 
-    if (!isGroup) {
-      const storeAllowFrom =
-        dmPolicy === 'pairing'
-          ? await readStoreAllowFromForDmPolicy({
-              provider: 'kook',
-              accountId,
-              dmPolicy,
-            })
-          : []
+    const storeAllowFrom =
+      dmPolicy === 'pairing'
+        ? await readStoreAllowFromForDmPolicy({
+            provider: 'kook',
+            accountId,
+            dmPolicy,
+          })
+        : []
 
-      const trustedGuildAllowed =
-        trustedGuilds.length > 0 ? await isUserInTrustedGuilds(event.author_id, trustedGuilds) : false
-      const effectiveAllowFrom = trustedGuildAllowed ? [...allowFrom, `kook:${event.author_id}`, event.author_id] : allowFrom
+    const currentGuildId = event.extra?.guild_id ?? null
+    const trustedGuildAllowed = isGroup
+      ? Boolean(currentGuildId && trustedGuilds.includes(currentGuildId))
+      : trustedGuilds.length > 0
+        ? await isUserInTrustedGuilds(event.author_id, trustedGuilds)
+        : false
+    const effectiveAllowFrom = trustedGuildAllowed ? [...allowFrom, `kook:${event.author_id}`, event.author_id] : allowFrom
 
-      const access = resolveKookDmAccess({
-        dmPolicy,
-        allowFrom: effectiveAllowFrom,
-        storeAllowFrom,
-        userId: event.author_id,
-      })
+    const access = resolveKookAccess({
+      isGroup,
+      dmPolicy,
+      allowFrom: effectiveAllowFrom,
+      storeAllowFrom,
+      userId: event.author_id,
+    })
+    const senderAuthorized = access.decision === 'allow'
 
-      if (access.decision !== 'allow') {
-        try {
-          if (access.decision === 'pairing') {
-            await pairing.issueChallenge({
-              senderId: event.author_id,
-              senderIdLine: `你的 KOOK 用户 ID: ${event.author_id}`,
-              meta: { name: senderName || undefined },
-              onCreated: ({ code }) => {
-                log?.info?.(`KOOK pairing request created for ${event.author_id} (code=${code})`)
-              },
-              sendPairingReply: async (text) => {
-                await deps.deliverReply(replyTarget, text, event.msg_id)
-              },
-              onReplyError: (err) => {
-                log?.error?.(`Failed to deliver KOOK pairing challenge: ${err}`)
-              },
-            })
-          } else {
-            await deps.deliverReply(replyTarget, '当前私信访问策略不允许该会话访问。', event.msg_id)
-          }
-        } catch (err) {
-          log?.error?.(`Failed to deliver DM policy response: ${err}`)
+    if (!senderAuthorized) {
+      try {
+        if (!isGroup && access.decision === 'pairing') {
+          await pairing.issueChallenge({
+            senderId: event.author_id,
+            senderIdLine: `你的 KOOK 用户 ID: ${event.author_id}`,
+            meta: { name: senderName || undefined },
+            onCreated: ({ code }) => {
+              log?.info?.(`KOOK pairing request created for ${event.author_id} (code=${code})`)
+            },
+            sendPairingReply: async (text) => {
+              await deps.deliverReply(replyTarget, text, event.msg_id)
+            },
+            onReplyError: (err) => {
+              log?.error?.(`Failed to deliver KOOK pairing challenge: ${err}`)
+            },
+          })
+        } else if (!isGroup) {
+          await deps.deliverReply(replyTarget, '当前私信访问策略不允许该会话访问。', event.msg_id)
         }
-        return
+      } catch (err) {
+        log?.error?.(`Failed to deliver DM policy response: ${err}`)
       }
+      return
     }
 
     // For groups, check mention gating
@@ -206,6 +191,25 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
         })
         return
       }
+    }
+
+    // --- Plugin-level slash command interception ---
+    // Only handle commands after access-control and mention gating succeed.
+    if (pluginCommand && senderAuthorized && (!isGroup || mentioned)) {
+      try {
+        await handlePluginCommand(pluginCommand, {
+          runtime,
+          deps,
+          event,
+          replyTarget,
+          chatType,
+          accountId,
+          senderAuthorized,
+        })
+      } catch (err) {
+        log?.error?.(`Plugin command error: ${err}`)
+      }
+      return // Do NOT forward to OpenClaw
     }
 
     // Record inbound activity
@@ -281,16 +285,7 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
     try {
       const shouldCheckCommand = runtime.channel.commands.shouldComputeCommandAuthorized(body, cfg)
       if (shouldCheckCommand) {
-        commandAuthorized = runtime.channel.commands.resolveCommandAuthorizedFromAuthorizers({
-          useAccessGroups: false,
-          authorizers: [
-            {
-              configured: chatType === 'direct',
-              allowed: chatType === 'direct',
-            },
-          ],
-          modeWhenAccessGroupsOff: 'allow',
-        })
+        commandAuthorized = senderAuthorized
       }
     } catch {
       // Fall back to unauthorized
@@ -436,6 +431,7 @@ interface PluginCommandContext {
   replyTarget: SendTarget
   chatType: string
   accountId: string
+  senderAuthorized: boolean
 }
 
 interface ResolvedPluginSessionRoute {
@@ -450,6 +446,10 @@ interface TranscriptMessage {
 }
 
 async function handlePluginCommand(cmd: PluginCommand, ctx: PluginCommandContext): Promise<void> {
+  if (!ctx.senderAuthorized) {
+    return
+  }
+
   switch (cmd.name) {
     case 'print-context':
     case 'ctx':

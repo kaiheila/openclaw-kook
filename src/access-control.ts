@@ -22,22 +22,24 @@ export function isKookSenderAllowed(entries: string[], userId: string): boolean 
   return entries.includes('*') || entries.includes(rawId) || entries.includes(normalizedId)
 }
 
-export function resolveKookDmAccess(params: {
+export function resolveKookAccess(params: {
+  isGroup: boolean
   dmPolicy: KookAccount['dmPolicy']
   allowFrom: string[]
   storeAllowFrom: string[]
   userId: string
 }) {
   const access = resolveDmGroupAccessWithLists({
-    isGroup: false,
+    isGroup: params.isGroup,
     dmPolicy: params.dmPolicy,
+    groupPolicy: 'allowlist',
     allowFrom: params.allowFrom,
     storeAllowFrom: params.storeAllowFrom,
-    groupAllowFromFallbackToAllowFrom: false,
+    groupAllowFromFallbackToAllowFrom: true,
     isSenderAllowed: (entries) => isKookSenderAllowed(entries, params.userId),
   })
 
-  if (params.dmPolicy !== 'open' || isKookSenderAllowed(access.effectiveAllowFrom, params.userId)) {
+  if (params.isGroup || params.dmPolicy !== 'open' || isKookSenderAllowed(access.effectiveAllowFrom, params.userId)) {
     return access
   }
 

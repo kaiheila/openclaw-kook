@@ -136,7 +136,6 @@ export function createSendService(client: KookClient, botName?: string): SendSer
             await client.api.updateDirectMessage({
               msg_id: messageId,
               content: buildTextCard(accumulatedContent),
-              quote: replyToId,
             })
           },
 

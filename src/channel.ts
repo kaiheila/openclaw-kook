@@ -34,11 +34,11 @@ const trustedGuildsHelp = betaEnabled
 const KOOK_PAIRING_APPROVED_MESSAGE = '✅ OpenClaw access approved. Send a message to start chatting.'
 
 const kookChannelSchemaProperties: Record<string, unknown> = {
-  enabled: { type: 'boolean', description: '是否启用 KOOK 频道' },
+  enabled: { type: 'boolean', description: '整个 KOOK Channel 的使能开关' },
   botAuth: {
     type: 'string',
     description:
-      'KOOK 机器人 Token。可访问 https://developer.kookapp.cn/bot/ 在 KOOK 开发者中心创建机器人，并在机器人配置页的 Token / Bot Token 区域获取。',
+      'KOOK 机器人 Token。\n\n可访问 https://developer.kookapp.cn/bot/ 在 KOOK 开发者中心创建机器人，并在机器人配置页获取 Token。',
   },
   baseUrl: { type: 'string', description: 'KOOK API 地址（默认: https://www.kookapp.cn）' },
   dmPolicy: {
@@ -49,10 +49,12 @@ const kookChannelSchemaProperties: Record<string, unknown> = {
   allowFrom: {
     type: 'array',
     items: { type: 'string' },
-    description: '允许的发送者 ID 列表（kook:userId 或 *）。为空则不允许任何人；如需允许所有人，请显式添加 *。',
+    description:
+      '允许的发送者 ID（userId 或 *）。为空则不允许任何人；如需允许所有人，请显式添加 *。\n\n如何查看一个人的 userId？在 KOOK 中，进入设置打开开发者模式，然后右键单击一位用户的头像，即可看到复制 ID 选项。',
   },
   acceptBotMessage: {
     type: 'boolean',
+    default: true,
     description: '是否接收其他机器人的消息并加入上下文（默认: true，不影响自身消息过滤）',
   },
   trustedGuilds: {
@@ -63,8 +65,16 @@ const kookChannelSchemaProperties: Record<string, unknown> = {
 }
 
 const kookChannelUiHints: NonNullable<ChannelConfigSchema['uiHints']> = {
+  enabled: { label: '总开关 (Enabled)' },
+  baseUrl: { placeholder: '不填默认为 https://www.kookapp.cn' },
+  acceptBotMessage: {
+    label: '接收其它 Bot 的信息',
+    help: '默认开启。关闭后会忽略其它 Bot 发来的消息，但仍会始终忽略机器人自身发送的消息。',
+  },
+  allowFrom: { label: '用户白名单 (Allow From)' },
+  dmPolicy: { label: '私信访问策略 (DM Policy)' },
   botAuth: { label: 'Bot Token' },
-  trustedGuilds: { advanced: true, help: trustedGuildsHelp },
+  trustedGuilds: { label: '服务器级白名单', advanced: true, help: trustedGuildsHelp },
 }
 
 const kookChannelConfigSchema: ChannelConfigSchema = {

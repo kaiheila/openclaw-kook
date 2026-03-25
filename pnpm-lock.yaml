@@ -14,6 +14,9 @@ importers:
       '@sinclair/typebox':
         specifier: ^0.34.0
         version: 0.34.48
+      ajv:
+        specifier: ^8.18.0
+        version: 8.18.0
       openclaw:
         specifier: '>=2026.3.23'
         version: 2026.3.23(@napi-rs/canvas@0.1.97)

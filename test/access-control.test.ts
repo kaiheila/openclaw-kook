@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { isKookSenderAllowed, resolveKookDmAccess } from '../src/access-control'
+import { isKookSenderAllowed, resolveKookAccess } from '../src/access-control'
 import { resolveKookAccount } from '../src/types'
 
 describe('KOOK allowFrom policy', () => {
   it('denies DM access when dmPolicy=open and allowFrom is empty', () => {
-    const access = resolveKookDmAccess({
+    const access = resolveKookAccess({
+      isGroup: false,
       dmPolicy: 'open',
       allowFrom: [],
       storeAllowFrom: [],
@@ -16,9 +17,34 @@ describe('KOOK allowFrom policy', () => {
   })
 
   it('allows DM access when dmPolicy=open and wildcard is configured', () => {
-    const access = resolveKookDmAccess({
+    const access = resolveKookAccess({
+      isGroup: false,
       dmPolicy: 'open',
       allowFrom: ['*'],
+      storeAllowFrom: [],
+      userId: '123456',
+    })
+
+    expect(access.decision).toBe('allow')
+  })
+
+  it('blocks group access when sender is not in allowFrom', () => {
+    const access = resolveKookAccess({
+      isGroup: true,
+      dmPolicy: 'open',
+      allowFrom: ['kook:999999'],
+      storeAllowFrom: [],
+      userId: '123456',
+    })
+
+    expect(access.decision).toBe('block')
+  })
+
+  it('allows group access when sender is in allowFrom', () => {
+    const access = resolveKookAccess({
+      isGroup: true,
+      dmPolicy: 'open',
+      allowFrom: ['kook:123456'],
       storeAllowFrom: [],
       userId: '123456',
     })
