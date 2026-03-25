@@ -8,6 +8,7 @@ import type {
   ChannelOutboundAdapter,
   ChannelOutboundContext,
 } from 'openclaw/plugin-sdk/channel-runtime'
+import { createTextPairingAdapter, createPairingPrefixStripper } from 'openclaw/plugin-sdk/channel-pairing'
 import type { ChannelConfigSchema } from 'openclaw/plugin-sdk'
 
 import { CardBuilder } from '@kookapp/js-sdk'
@@ -16,13 +17,15 @@ import { isExperimentalFeaturesEnabled } from './beta'
 import type { KookAccount } from './types'
 import { kookConfigAdapter } from './config'
 import { kookGatewayAdapter, getActiveClient } from './connection-manager'
-import { kookSecurityAdapter } from './access-control'
+import { kookSecurityAdapter, normalizeKookAllowEntry } from './access-control'
 import { kookDirectoryAdapter } from './directory'
 import { kookStatusAdapter } from './status'
 import type { KookProbe } from './status'
 import { formatKMarkdown, stripKookMentions } from './message-utils'
+import { createSendTarget } from './send-service'
 
 const betaEnabled = isExperimentalFeaturesEnabled()
+const KOOK_PAIRING_APPROVED_MESSAGE = '✅ OpenClaw access approved. Send a message to start chatting.'
 
 const kookChannelSchemaProperties: Record<string, unknown> = {
   enabled: { type: 'boolean', description: '是否启用 KOOK 频道' },
@@ -118,16 +121,40 @@ const kookMentionAdapter: ChannelMentionAdapter = {
   },
 }
 
+function parseKookExplicitTarget(raw: string) {
+  const normalized = raw.trim().replace(/^kook:/i, '')
+  if (!normalized) {
+    return null
+  }
+  if (/^user:/i.test(normalized)) {
+    const id = normalized.replace(/^user:/i, '').trim()
+    return id ? { to: `kook:user:${id}`, chatType: 'direct' as const } : null
+  }
+  if (/^channel:/i.test(normalized)) {
+    const id = normalized.replace(/^channel:/i, '').trim()
+    return id ? { to: `kook:channel:${id}`, chatType: 'channel' as const } : null
+  }
+  if (/^\d+$/.test(normalized)) {
+    return { to: `kook:channel:${normalized}`, chatType: 'channel' as const }
+  }
+  return null
+}
+
 const kookMessagingAdapter: ChannelMessagingAdapter = {
   normalizeTarget(raw: string) {
-    if (raw.startsWith('kook:')) {
-      return raw
-    }
-    // Bare numeric IDs
-    if (/^\d+$/.test(raw)) {
-      return `kook:${raw}`
+    const parsed = parseKookExplicitTarget(raw)
+    if (parsed) {
+      return parsed.to
     }
     return undefined
+  },
+
+  parseExplicitTarget({ raw }) {
+    return parseKookExplicitTarget(raw)
+  },
+
+  inferTargetChatType({ to }) {
+    return parseKookExplicitTarget(to)?.chatType
   },
 
   formatTargetDisplay(params) {
@@ -135,14 +162,58 @@ const kookMessagingAdapter: ChannelMessagingAdapter = {
     if (display) {
       return display
     }
-    return target.replace(/^kook:/, '')
+    return target.replace(/^kook:/, '').replace(/^(user:|channel:)/, '')
   },
 }
+
+function ensureDirectChatCode(client: NonNullable<ReturnType<typeof getActiveClient>>, userId: string) {
+  return client.api.createUserChat({ target_id: userId }).then((response) => {
+    const chatCode = response.data?.code
+    if (!chatCode) {
+      throw new Error(`Failed to create KOOK DM chat for user ${userId}`)
+    }
+    return chatCode
+  })
+}
+
+const kookPairingAdapter = createTextPairingAdapter({
+  idLabel: 'kookUserId',
+  message: KOOK_PAIRING_APPROVED_MESSAGE,
+  normalizeAllowEntry: createPairingPrefixStripper(/^(kook|user):/i, normalizeKookAllowEntry),
+  notify: async ({ accountId, id, message }) => {
+    const client = getActiveClient(accountId ?? 'default')
+    if (!client) {
+      throw new Error('KOOK client is not connected')
+    }
+
+    const userId = normalizeKookAllowEntry(id).replace(/^kook:/i, '')
+    const chatCode = await ensureDirectChatCode(client, userId)
+
+    const card = CardBuilder.fromTemplate({ initialCard: { theme: 'none' } })
+    card.addKMarkdownText(formatKMarkdown(message))
+
+    await client.api.createDirectMessage({
+      chat_code: chatCode,
+      content: card.build(),
+      type: 10,
+    })
+  },
+})
 
 const kookOutboundAdapter: ChannelOutboundAdapter = {
   deliveryMode: 'gateway',
   textChunkLimit: 4000,
   chunkerMode: 'markdown',
+  resolveTarget: ({ to }) => {
+    if (!to) {
+      return { ok: false, error: new Error('Missing KOOK target') }
+    }
+    const parsed = parseKookExplicitTarget(to)
+    if (!parsed) {
+      return { ok: false, error: new Error(`Invalid KOOK target: ${to}`) }
+    }
+    return { ok: true, to: parsed.to }
+  },
 
   async sendText(ctx: ChannelOutboundContext) {
     try {
@@ -151,24 +222,31 @@ const kookOutboundAdapter: ChannelOutboundAdapter = {
         return { channel: 'kook' as const, messageId: '' }
       }
 
-      const targetId = ctx.to.replace(/^kook:/, '')
+      const target = createSendTarget(ctx.to)
       const kmd = formatKMarkdown(ctx.text)
 
-      // Build a card for rich display (Miku-style)
       const card = CardBuilder.fromTemplate({ initialCard: { theme: 'none' } })
       card.addKMarkdownText(kmd)
 
-      const response = await client.api.createMessage({
-        target_id: targetId,
-        content: card.build(),
-        type: 10,
-        quote: ctx.replyToId ?? undefined,
-      })
+      const response =
+        target.chatType === 'direct'
+          ? await client.api.createDirectMessage({
+              chat_code: await ensureDirectChatCode(client, target.userId),
+              content: card.build(),
+              type: 10,
+              quote: ctx.replyToId ?? undefined,
+            })
+          : await client.api.createMessage({
+              target_id: target.targetId,
+              content: card.build(),
+              type: 10,
+              quote: ctx.replyToId ?? undefined,
+            })
 
       return {
         channel: 'kook' as const,
         messageId: response.data?.msg_id ?? '',
-        chatId: targetId,
+        chatId: target.targetId,
       }
     } catch (err) {
       return { channel: 'kook' as const, messageId: '' }
@@ -182,9 +260,8 @@ const kookOutboundAdapter: ChannelOutboundAdapter = {
         return { channel: 'kook' as const, messageId: '' }
       }
 
-      const targetId = ctx.to.replace(/^kook:/, '')
+      const target = createSendTarget(ctx.to)
 
-      // Build card with media
       const card = CardBuilder.fromTemplate({ initialCard: { theme: 'none' } })
 
       if (ctx.mediaUrl) {
@@ -195,16 +272,24 @@ const kookOutboundAdapter: ChannelOutboundAdapter = {
         card.addKMarkdownText(formatKMarkdown(ctx.text))
       }
 
-      const response = await client.api.createMessage({
-        target_id: targetId,
-        content: card.build(),
-        type: 10,
-      })
+      const response =
+        target.chatType === 'direct'
+          ? await client.api.createDirectMessage({
+              chat_code: await ensureDirectChatCode(client, target.userId),
+              content: card.build(),
+              type: 10,
+              quote: ctx.replyToId ?? undefined,
+            })
+          : await client.api.createMessage({
+              target_id: target.targetId,
+              content: card.build(),
+              type: 10,
+            })
 
       return {
         channel: 'kook' as const,
         messageId: response.data?.msg_id ?? '',
-        chatId: targetId,
+        chatId: target.targetId,
       }
     } catch (err) {
       return { channel: 'kook' as const, messageId: '' }
@@ -220,6 +305,7 @@ export const kookPlugin: ChannelPlugin<KookAccount, KookProbe> = {
 
   config: kookConfigAdapter,
   gateway: kookGatewayAdapter,
+  pairing: kookPairingAdapter,
   security: kookSecurityAdapter,
   groups: kookGroupAdapter,
   mentions: kookMentionAdapter,

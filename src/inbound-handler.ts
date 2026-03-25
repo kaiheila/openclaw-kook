@@ -1,4 +1,5 @@
 import type { ChannelLogSink } from 'openclaw/plugin-sdk/channel-runtime'
+import { createChannelPairingController } from 'openclaw/plugin-sdk/channel-pairing'
 import { readStoreAllowFromForDmPolicy, resolveDmGroupAccessWithLists } from 'openclaw/plugin-sdk/channel-policy'
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core'
 import type { ReplyPayload } from 'openclaw/plugin-sdk/reply-runtime'
@@ -15,6 +16,7 @@ import type { StreamingCard as StreamingCardType } from '@kookapp/js-sdk'
 import { buildMsgContext } from './message-utils'
 import { formatKMarkdown } from './message-utils'
 import { getKookRuntime } from './runtime'
+import type { SendTarget } from './send-service'
 
 export interface HistoryEntry {
   sender: string
@@ -36,9 +38,10 @@ interface InboundHandlerDeps {
   allowFrom: string[]
   trustedGuilds: string[]
   isUserInTrustedGuilds: (userId: string, guildIds: string[]) => Promise<boolean>
-  deliverReply: (channelId: string, text: string, replyToId?: string) => Promise<void>
-  deliverCardReply: (channelId: string, cardJson: string, replyToId?: string) => Promise<void>
-  createStreamingCard: (channelId: string, replyToId?: string) => StreamingCardType
+  deliverReply: (target: SendTarget, text: string, replyToId?: string) => Promise<void>
+  deliverCardReply: (target: SendTarget, cardJson: string, replyToId?: string) => Promise<void>
+  createStreamingCard: (target: SendTarget, replyToId?: string) => StreamingCardType
+  supportsStreaming: (target: SendTarget) => boolean
 }
 
 export function createInboundHandler(deps: InboundHandlerDeps) {
@@ -77,10 +80,18 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
     }
 
     const runtime = getKookRuntime()
+    const pairing = createChannelPairingController({
+      core: runtime,
+      channel: 'kook',
+      accountId,
+    })
 
     const mentioned = isExplicitlyMentioningBot(event, botUserId)
     const chatType = event.channel_type === 'PERSON' ? 'direct' : 'group'
     const isGroup = chatType === 'group'
+    const replyTarget: SendTarget = isGroup
+      ? { chatType: 'group', targetId: event.target_id }
+      : { chatType: 'direct', targetId: event.target_id, userId: event.author_id }
 
     // Build sender label
     const senderName = event.extra?.author?.nickname ?? event.extra?.author?.username ?? event.author_id
@@ -91,7 +102,6 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
     // Handle commands locally before passing to OpenClaw
     // In groups, commands require @mention just like normal messages
     const trimmedBody = body.trim()
-    const replyTargetId = event.target_id
     const pluginCommand = parsePluginCommand(trimmedBody)
     if (pluginCommand && (!isGroup || mentioned)) {
       try {
@@ -99,7 +109,7 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
           runtime,
           deps,
           event,
-          channelId: replyTargetId,
+          replyTarget,
           chatType,
           accountId,
         })
@@ -136,12 +146,25 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
       })
 
       if (access.decision !== 'allow') {
-        const denialText =
-          access.decision === 'pairing'
-            ? '当前私信访问策略需要先配对/授权，请先将你的 KOOK 用户 ID 加入 channels.kook.allowFrom。'
-            : '当前私信访问策略不允许该会话访问。'
         try {
-          await deps.deliverReply(replyTargetId, denialText, event.msg_id)
+          if (access.decision === 'pairing') {
+            await pairing.issueChallenge({
+              senderId: event.author_id,
+              senderIdLine: `你的 KOOK 用户 ID: ${event.author_id}`,
+              meta: { name: senderName || undefined },
+              onCreated: ({ code }) => {
+                log?.info?.(`KOOK pairing request created for ${event.author_id} (code=${code})`)
+              },
+              sendPairingReply: async (text) => {
+                await deps.deliverReply(replyTarget, text, event.msg_id)
+              },
+              onReplyError: (err) => {
+                log?.error?.(`Failed to deliver KOOK pairing challenge: ${err}`)
+              },
+            })
+          } else {
+            await deps.deliverReply(replyTarget, '当前私信访问策略不允许该会话访问。', event.msg_id)
+          }
         } catch (err) {
           log?.error?.(`Failed to deliver DM policy response: ${err}`)
         }
@@ -310,15 +333,13 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
       }
     }
 
-    // Streaming card for incremental updates
-    const channelId = replyTargetId
-
+    const canStream = deps.supportsStreaming(replyTarget)
     const state: { streamingCard: StreamingCardType | null } = { streamingCard: null }
 
-    // Immediately send a "typing" placeholder card
-    if (channelId) {
+    // Immediately send a "typing" placeholder card for supported targets only
+    if (canStream) {
       try {
-        state.streamingCard = deps.createStreamingCard(channelId, event.msg_id)
+        state.streamingCard = deps.createStreamingCard(replyTarget, event.msg_id)
         await state.streamingCard.initialize()
       } catch (err) {
         log?.error?.(`Failed to send typing indicator: ${err}`)
@@ -334,7 +355,7 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
         deliver: async (payload: ReplyPayload) => {
           try {
             const text = payload.text
-            if (!text || !channelId) {
+            if (!text) {
               return
             }
 
@@ -349,14 +370,19 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
               // Non-critical
             }
 
+            if (!canStream) {
+              await deps.deliverReply(replyTarget, text, event.msg_id)
+              return
+            }
+
             // Create streaming card if not yet created (fallback)
             if (!state.streamingCard) {
-              state.streamingCard = deps.createStreamingCard(channelId, event.msg_id)
+              state.streamingCard = deps.createStreamingCard(replyTarget, event.msg_id)
             }
 
             // Append text as KMarkdown
             const kmd = formatKMarkdown(text)
-            await state.streamingCard!.appendText(kmd)
+            await state.streamingCard.appendText(kmd)
           } catch (err) {
             log?.error?.(`Failed to deliver reply block: ${err}`)
           }
@@ -404,14 +430,12 @@ interface PluginCommandContext {
   runtime: ReturnType<typeof getKookRuntime>
   deps: InboundHandlerDeps
   event: KEvent<KTextChannelExtra>
-  channelId: string
+  replyTarget: SendTarget
   chatType: string
   accountId: string
 }
 
 async function handlePluginCommand(cmd: PluginCommand, ctx: PluginCommandContext): Promise<void> {
-  const { runtime, deps, event, channelId } = ctx
-
   switch (cmd.name) {
     case 'print-context':
     case 'ctx':
@@ -425,7 +449,7 @@ async function handlePluginCommand(cmd: PluginCommand, ctx: PluginCommandContext
 }
 
 async function handlePrintContext(ctx: PluginCommandContext): Promise<void> {
-  const { runtime, deps, event, channelId, chatType, accountId } = ctx
+  const { runtime, deps, event, replyTarget, chatType, accountId } = ctx
 
   const guildId = event.extra?.guild_id ?? null
   const peerId = chatType === 'direct' ? event.author_id : event.target_id
@@ -441,7 +465,7 @@ async function handlePrintContext(ctx: PluginCommandContext): Promise<void> {
       guildId,
     })
   } catch (err) {
-    await deps.deliverReply(channelId, `无法解析路由: ${err}`, event.msg_id)
+    await deps.deliverReply(replyTarget, `无法解析路由: ${err}`, event.msg_id)
     return
   }
 
@@ -453,12 +477,12 @@ async function handlePrintContext(ctx: PluginCommandContext): Promise<void> {
     })
     messages = result.messages ?? []
   } catch (err) {
-    await deps.deliverReply(channelId, `无法读取会话: ${err}`, event.msg_id)
+    await deps.deliverReply(replyTarget, `无法读取会话: ${err}`, event.msg_id)
     return
   }
 
   if (messages.length === 0) {
-    await deps.deliverReply(channelId, `当前会话为空 (sessionKey: \`${route.sessionKey}\`)`, event.msg_id)
+    await deps.deliverReply(replyTarget, `当前会话为空 (sessionKey: \`${route.sessionKey}\`)`, event.msg_id)
     return
   }
 
@@ -477,7 +501,7 @@ async function handlePrintContext(ctx: PluginCommandContext): Promise<void> {
     lines.push(`**${role}**: ${preview}`)
   }
 
-  await deps.deliverReply(channelId, lines.join('\n'), event.msg_id)
+  await deps.deliverReply(replyTarget, lines.join('\n'), event.msg_id)
 }
 
 /**
@@ -511,7 +535,7 @@ function extractMessageContent(msg: any): string {
 }
 
 async function handleSessionReset(ctx: PluginCommandContext): Promise<void> {
-  const { runtime, deps, event, channelId, chatType, accountId } = ctx
+  const { runtime, deps, event, replyTarget, chatType, accountId } = ctx
 
   const guildId = event.extra?.guild_id ?? null
   const peerId = chatType === 'direct' ? event.author_id : event.target_id
@@ -527,7 +551,7 @@ async function handleSessionReset(ctx: PluginCommandContext): Promise<void> {
       guildId,
     })
   } catch (err) {
-    await deps.deliverReply(channelId, `无法解析路由: ${err}`, event.msg_id)
+    await deps.deliverReply(replyTarget, `无法解析路由: ${err}`, event.msg_id)
     return
   }
 
@@ -535,8 +559,8 @@ async function handleSessionReset(ctx: PluginCommandContext): Promise<void> {
     await runtime.subagent.deleteSession({
       sessionKey: route.sessionKey,
     })
-    await deps.deliverReply(channelId, `会话已重置`, event.msg_id)
+    await deps.deliverReply(replyTarget, `会话已重置`, event.msg_id)
   } catch (err) {
-    await deps.deliverReply(channelId, `会话重置失败: ${err}`, event.msg_id)
+    await deps.deliverReply(replyTarget, `会话重置失败: ${err}`, event.msg_id)
   }
 }

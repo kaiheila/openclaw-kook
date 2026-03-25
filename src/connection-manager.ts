@@ -131,6 +131,7 @@ export const kookGatewayAdapter: ChannelGatewayAdapter<KookAccount> = {
       deliverReply: sendService.sendKMarkdown.bind(sendService),
       deliverCardReply: sendService.sendCard.bind(sendService),
       createStreamingCard: sendService.createStreamingCard.bind(sendService),
+      supportsStreaming: sendService.supportsStreaming.bind(sendService),
     })
 
     // Register event listener
