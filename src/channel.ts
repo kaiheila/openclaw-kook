@@ -25,6 +25,12 @@ import { formatKMarkdown, stripKookMentions } from './message-utils'
 import { createSendTarget } from './send-service'
 
 const betaEnabled = isExperimentalFeaturesEnabled()
+const trustedGuildsDescription = betaEnabled
+  ? '信任的服务器 ID 列表，其中的所有成员自动视为 allowFrom 的一员'
+  : '信任的服务器 ID 列表（实验功能）。当前未启用时该字段锁定为默认值 []。设置环境变量 ENABLE_EXPERIMENTAL_FEATURES=1 后可编辑并生效。'
+const trustedGuildsHelp = betaEnabled
+  ? '实验功能已启用。这里配置的服务器成员会自动视为 allowFrom 允许对象。'
+  : '当前实验功能未启用：该字段仅展示、不会生效，并会被锁定为默认值 []。如需启用，请设置环境变量 ENABLE_EXPERIMENTAL_FEATURES=1。'
 const KOOK_PAIRING_APPROVED_MESSAGE = '✅ OpenClaw access approved. Send a message to start chatting.'
 
 const kookChannelSchemaProperties: Record<string, unknown> = {
@@ -43,29 +49,22 @@ const kookChannelSchemaProperties: Record<string, unknown> = {
   allowFrom: {
     type: 'array',
     items: { type: 'string' },
-    description: '允许的发送者 ID 列表（kook:userId 格式），为空则允许所有人',
+    description: '允许的发送者 ID 列表（kook:userId 或 *）。为空则不允许任何人；如需允许所有人，请显式添加 *。',
   },
   acceptBotMessage: {
     type: 'boolean',
     description: '是否接收其他机器人的消息并加入上下文（默认: true，不影响自身消息过滤）',
   },
-}
-
-if (betaEnabled) {
-  kookChannelSchemaProperties.trustedGuilds = {
+  trustedGuilds: {
     type: 'array',
     items: { type: 'string' },
-    description: '信任的服务器 ID 列表，其中的所有成员自动视为 allowFrom 的一员',
-  }
+    description: trustedGuildsDescription,
+  },
 }
 
 const kookChannelUiHints: NonNullable<ChannelConfigSchema['uiHints']> = {
   botAuth: { label: 'Bot Token' },
-  ...(betaEnabled
-    ? {
-        trustedGuilds: { advanced: true },
-      }
-    : {}),
+  trustedGuilds: { advanced: true, help: trustedGuildsHelp },
 }
 
 const kookChannelConfigSchema: ChannelConfigSchema = {

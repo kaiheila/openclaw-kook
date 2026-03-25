@@ -7,11 +7,17 @@ export type SendTarget =
   | { chatType: 'group'; targetId: string }
   | { chatType: 'direct'; targetId: string; userId: string }
 
+export interface StreamingMessageHandle {
+  initialize(): Promise<void>
+  appendText(content: string): Promise<void>
+  finalize(): Promise<void>
+}
+
 export interface SendService {
   sendKMarkdown(target: SendTarget, text: string, replyToId?: string): Promise<void>
   sendCard(target: SendTarget, cardJson: string, replyToId?: string): Promise<void>
   sendMedia(target: SendTarget, mediaUrl: string, replyToId?: string): Promise<void>
-  createStreamingCard(target: SendTarget, replyToId?: string): StreamingCard
+  createStreamingCard(target: SendTarget, replyToId?: string): StreamingMessageHandle
   supportsStreaming(target: SendTarget): boolean
 }
 
@@ -40,6 +46,12 @@ export function createSendService(client: KookClient, botName?: string): SendSer
     return chatCode
   }
 
+  const buildTextCard = (text: string): string => {
+    const card = CardBuilder.fromTemplate({ initialCard: { theme: 'none' } })
+    card.addKMarkdownText(text)
+    return card.build()
+  }
+
   const sendCardPayload = async (
     target: SendTarget,
     content: string,
@@ -66,11 +78,7 @@ export function createSendService(client: KookClient, botName?: string): SendSer
   return {
     async sendKMarkdown(target, text, replyToId) {
       const kmd = formatKMarkdown(text)
-
-      const card = CardBuilder.fromTemplate({ initialCard: { theme: 'none' } })
-      card.addKMarkdownText(kmd)
-
-      await sendCardPayload(target, card.build(), replyToId)
+      await sendCardPayload(target, buildTextCard(kmd), replyToId)
     },
 
     async sendCard(target, cardJson, replyToId) {
@@ -86,6 +94,56 @@ export function createSendService(client: KookClient, botName?: string): SendSer
 
     createStreamingCard(target, replyToId) {
       const displayName = botName ?? 'Bot'
+
+      if (target.chatType === 'direct') {
+        const placeholder = `*${displayName} 正在输入...*`
+        let messageId: string | null = null
+        let initialized = false
+        let accumulatedContent = ''
+
+        const initializePlaceholder = async () => {
+          if (initialized) {
+            return
+          }
+
+          const chatCode = await ensureDirectChat(target.userId)
+          const response = await client.api.createDirectMessage({
+            chat_code: chatCode,
+            content: buildTextCard(placeholder),
+            type: 10,
+            quote: replyToId,
+          })
+          messageId = response.data?.msg_id ?? null
+          if (!messageId) {
+            throw new Error(`Failed to create KOOK DM placeholder message for user ${target.userId}`)
+          }
+          initialized = true
+        }
+
+        return {
+          async initialize() {
+            await initializePlaceholder()
+          },
+
+          async appendText(content) {
+            accumulatedContent += content
+            if (!messageId) {
+              await initializePlaceholder()
+            }
+            if (!messageId) {
+              throw new Error(`Missing KOOK DM placeholder message for user ${target.userId}`)
+            }
+            await client.api.updateDirectMessage({
+              msg_id: messageId,
+              content: buildTextCard(accumulatedContent),
+              quote: replyToId,
+            })
+          },
+
+          async finalize() {},
+        }
+      }
+
       return new StreamingCard({
         api: client.api,
         targetId: target.targetId,
@@ -104,7 +162,7 @@ export function createSendService(client: KookClient, botName?: string): SendSer
     },
 
     supportsStreaming(target) {
-      return target.chatType === 'group'
+      return target.chatType === 'group' || target.chatType === 'direct'
     },
   }
 }
