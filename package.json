@@ -1,6 +1,6 @@
 {
   "name": "@kookapp/openclaw-kook",
-  "version": "1.1.0-beta.6",
+  "version": "1.1.0-beta.7",
   "description": "Kook channel plugin for OpenClaw",
   "type": "module",
   "main": "index.ts",
@@ -62,18 +62,20 @@
   "homepage": "https://github.com/kaiheila/openclaw-kook",
   "dependencies": {
     "@kookapp/js-sdk": "^0.1.2",
-    "@sinclair/typebox": "^0.34.0"
+    "@sinclair/typebox": "^0.34.0",
+    "//": " OpenClaw requires ajv and they didn't depend it explicitly.",
+    "ajv": "^8.18.0"
   },
   "peerDependencies": {
     "openclaw": ">=2026.3.23"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0",
-    "eslint": "^9.0.0",
     "@eslint/js": "^9.0.0",
-    "typescript-eslint": "^8.0.0",
+    "@trivago/prettier-plugin-sort-imports": "^5.2.0",
+    "eslint": "^9.0.0",
     "prettier": "^3.4.0",
-    "@trivago/prettier-plugin-sort-imports": "^5.2.0"
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0"
   }
 }
