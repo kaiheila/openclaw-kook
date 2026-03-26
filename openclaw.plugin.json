@@ -1,11 +1,9 @@
 {
   "id": "openclaw-kook",
   "name": "Kook",
-  "version": "1.0.2",
+  "version": "1.0.6",
   "description": "Kook channel plugin for OpenClaw",
-  "channels": [
-    "kook"
-  ],
+  "channels": ["kook"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

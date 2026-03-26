@@ -1,9 +1,9 @@
 import type {
   ChannelConfigAdapter,
-  OpenClawConfig,
   ChannelAccountSnapshot,
-} from 'openclaw/plugin-sdk'
-import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from 'openclaw/plugin-sdk'
+} from 'openclaw/plugin-sdk/channel-runtime'
+import type { OpenClawConfig } from 'openclaw/plugin-sdk/core'
+import { DEFAULT_ACCOUNT_ID, normalizeAccountId } from 'openclaw/plugin-sdk/account-id'
 
 import type { KookAccount } from './types'
 import { listKookAccountIds, resolveKookAccount } from './types'

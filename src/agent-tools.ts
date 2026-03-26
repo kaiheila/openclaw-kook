@@ -1,7 +1,7 @@
 import { Type } from '@sinclair/typebox'
 import { readFile } from 'fs/promises'
 import { basename } from 'path'
-import type { AnyAgentTool } from 'openclaw/plugin-sdk'
+import type { AnyAgentTool } from 'openclaw/plugin-sdk/core'
 
 import type { RestClient } from '@kookapp/js-sdk'
 
@@ -53,7 +53,7 @@ const ACTION_MAP: Record<string, ActionHandler> = {
   // 自定义请求
   raw_request: (api, p) => {
     if (!p.path) {
-      return { success: false, code: 400, message: 'params.path is required for raw_request', data: null }
+      return Promise.resolve({ success: false, code: 400, message: 'params.path is required for raw_request', data: null })
     }
     const method = (p.method ?? 'GET').toUpperCase() as 'GET' | 'POST' | 'PUT' | 'DELETE'
     const payload = method === 'GET' ? p.query : { ...p.query, ...p.body }

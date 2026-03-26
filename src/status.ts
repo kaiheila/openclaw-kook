@@ -1,11 +1,11 @@
 import type {
   ChannelStatusAdapter,
   ChannelAccountSnapshot,
-} from 'openclaw/plugin-sdk'
+} from 'openclaw/plugin-sdk/channel-runtime'
 import {
   createDefaultChannelRuntimeState,
   buildBaseAccountStatusSnapshot,
-} from 'openclaw/plugin-sdk'
+} from 'openclaw/plugin-sdk/status-helpers'
 
 import { getActiveClient } from './connection-manager'
 import type { KookAccount } from './types'

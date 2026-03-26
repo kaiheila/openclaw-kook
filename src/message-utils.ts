@@ -67,7 +67,7 @@ export function buildMsgContext(params: BuildMsgContextParams): MsgContextLike {
     CommandAuthorized: commandAuthorized,
     InboundHistory: inboundHistory,
     From: `kook:${event.author_id}`,
-    To: `kook:${event.target_id}`,
+    To: chatType === 'direct' ? `kook:user:${event.author_id}` : `kook:channel:${event.target_id}`,
     SessionKey: sessionKey,
     AccountId: accountId,
     MessageSid: event.msg_id,
@@ -80,7 +80,7 @@ export function buildMsgContext(params: BuildMsgContextParams): MsgContextLike {
     WasMentioned: mentioned,
     Timestamp: event.msg_timestamp,
     OriginatingChannel: 'kook',
-    OriginatingTo: `kook:${event.target_id}`,
+    OriginatingTo: chatType === 'direct' ? `kook:user:${event.author_id}` : `kook:channel:${event.target_id}`,
     GroupSpace: guildId ?? undefined,
     GroupChannel: chatType === 'group' ? event.target_id : undefined,
   }

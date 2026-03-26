@@ -70,7 +70,7 @@ interface KookAccount {
 ```
 
 ### KookChannelConfig
-运行时配置，读取自 `cfg.channels.kook`。
+运行时配置，读取自 `cfg.channels.kook`。外部配置字段使用 `botAuth`，并兼容旧的 `botToken`；解析后统一映射到内部 `KookAccount.botToken`。
 
 ## Gotchas
 
