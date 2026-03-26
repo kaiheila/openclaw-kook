@@ -8,8 +8,7 @@ import type {
 import type { KookAccount } from './types'
 
 export function normalizeKookAllowEntry(raw: string): string {
-  const trimmed = raw.trim().replace(/^kook:/i, '').replace(/^user:/i, '').trim()
-  return `kook:${trimmed}`
+  return raw.trim()
 }
 
 export function isKookSenderAllowed(entries: string[], userId: string): boolean {
@@ -18,8 +17,7 @@ export function isKookSenderAllowed(entries: string[], userId: string): boolean 
     return false
   }
 
-  const normalizedId = normalizeKookAllowEntry(rawId)
-  return entries.includes('*') || entries.includes(rawId) || entries.includes(normalizedId)
+  return entries.includes('*') || entries.includes(rawId)
 }
 
 export function resolveKookAccess(params: {
@@ -28,7 +26,7 @@ export function resolveKookAccess(params: {
   allowFrom: string[]
   storeAllowFrom: string[]
   userId: string
-}) {
+}): ReturnType<typeof resolveDmGroupAccessWithLists> {
   const access = resolveDmGroupAccessWithLists({
     isGroup: params.isGroup,
     dmPolicy: params.dmPolicy,

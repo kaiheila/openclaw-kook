@@ -8,7 +8,7 @@ import type {
   ChannelOutboundAdapter,
   ChannelOutboundContext,
 } from 'openclaw/plugin-sdk/channel-runtime'
-import { createTextPairingAdapter, createPairingPrefixStripper } from 'openclaw/plugin-sdk/channel-pairing'
+import { createTextPairingAdapter } from 'openclaw/plugin-sdk/channel-pairing'
 import type { ChannelConfigSchema } from 'openclaw/plugin-sdk'
 
 import { CardBuilder } from '@kookapp/js-sdk'
@@ -188,14 +188,14 @@ function ensureDirectChatCode(client: NonNullable<ReturnType<typeof getActiveCli
 const kookPairingAdapter = createTextPairingAdapter({
   idLabel: 'kookUserId',
   message: KOOK_PAIRING_APPROVED_MESSAGE,
-  normalizeAllowEntry: createPairingPrefixStripper(/^(kook|user):/i, normalizeKookAllowEntry),
+  normalizeAllowEntry: normalizeKookAllowEntry,
   notify: async ({ accountId, id, message }) => {
     const client = getActiveClient(accountId ?? 'default')
     if (!client) {
       throw new Error('KOOK client is not connected')
     }
 
-    const userId = normalizeKookAllowEntry(id).replace(/^kook:/i, '')
+    const userId = normalizeKookAllowEntry(id)
     const chatCode = await ensureDirectChatCode(client, userId)
 
     const card = CardBuilder.fromTemplate({ initialCard: { theme: 'none' } })

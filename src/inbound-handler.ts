@@ -123,7 +123,7 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
       : trustedGuilds.length > 0
         ? await isUserInTrustedGuilds(event.author_id, trustedGuilds)
         : false
-    const effectiveAllowFrom = trustedGuildAllowed ? [...allowFrom, `kook:${event.author_id}`, event.author_id] : allowFrom
+    const effectiveAllowFrom = trustedGuildAllowed ? [...allowFrom, event.author_id] : allowFrom
 
     const access = resolveKookAccess({
       isGroup,
