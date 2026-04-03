@@ -7,7 +7,6 @@ import { createChannelPairingController } from 'openclaw/plugin-sdk/channel-pair
 import { readStoreAllowFromForDmPolicy } from 'openclaw/plugin-sdk/channel-policy'
 import type { OpenClawConfig } from 'openclaw/plugin-sdk/core'
 import type { ReplyPayload } from 'openclaw/plugin-sdk/reply-runtime'
-import { dispatchReplyWithDispatcher } from 'openclaw/plugin-sdk/reply-runtime'
 import {
   buildPendingHistoryContextFromMap,
   clearHistoryEntriesIfEnabled,
@@ -350,7 +349,7 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
     }
 
     // Dispatch reply
-    await dispatchReplyWithDispatcher({
+    await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
       ctx: finalizedCtx,
       cfg,
       dispatcherOptions: {
