@@ -12,6 +12,7 @@ export const KOOK_PLATFORM_GUIDANCE = `\
 
 You have a \`kook_platform\` tool to interact with KOOK (a Discord-like messaging platform).
 Call it with \`{ action, params }\`.
+When the user asks you to process files, create files, or produce deliverable artifacts, send the finished result back to the user through KOOK instead of only saying that it was created.
 
 ### Message Types (type field)
 | Value | Type | Notes |

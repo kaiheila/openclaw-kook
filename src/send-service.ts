@@ -1,5 +1,5 @@
 import type { KookClient, KResponseExt, CreateMessageResult } from '@kookapp/js-sdk'
-import { CardBuilder, StreamingCard } from '@kookapp/js-sdk'
+import { CardBuilder } from '@kookapp/js-sdk'
 
 import { formatKMarkdown } from './message-utils'
 
@@ -19,6 +19,13 @@ export interface SendService {
   sendMedia(target: SendTarget, mediaUrl: string, replyToId?: string): Promise<void>
   createStreamingCard(target: SendTarget, replyToId?: string): StreamingMessageHandle
   supportsStreaming(target: SendTarget): boolean
+}
+
+const STREAM_CARD_MAX_LENGTH = 4500
+const STREAM_UPDATE_THROTTLE_MS = 300
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 export function createSendTarget(to: string, chatType: 'group' | 'direct' = 'group'): SendTarget {
@@ -50,6 +57,26 @@ export function createSendService(client: KookClient, botName?: string): SendSer
     const card = CardBuilder.fromTemplate({ initialCard: { theme: 'none' } })
     card.addKMarkdownText(text)
     return card.build()
+  }
+
+  const sendTextPayload = async (target: SendTarget, text: string, replyToId?: string): Promise<void> => {
+    if (target.chatType === 'direct') {
+      const chatCode = await ensureDirectChat(target.userId)
+      await client.api.createDirectMessage({
+        chat_code: chatCode,
+        content: text,
+        type: 9,
+        quote: replyToId,
+      })
+      return
+    }
+
+    await client.api.createMessage({
+      target_id: target.targetId,
+      content: text,
+      type: 9,
+      quote: replyToId,
+    })
   }
 
   const sendCardPayload = async (
@@ -94,18 +121,20 @@ export function createSendService(client: KookClient, botName?: string): SendSer
 
     createStreamingCard(target, replyToId) {
       const displayName = botName ?? 'Bot'
+      const placeholder = `*${displayName} 正在输入...*`
+      const fallbackNotice = '*回复较长，后续改用普通文字消息发送。*'
+      let messageId: string | null = null
+      let initialized = false
+      let accumulatedContent = ''
+      let streamingDisabled = false
+      let lastUpdateAt = 0
 
-      if (target.chatType === 'direct') {
-        const placeholder = `*${displayName} 正在输入...*`
-        let messageId: string | null = null
-        let initialized = false
-        let accumulatedContent = ''
+      const createPlaceholder = async () => {
+        if (initialized) {
+          return
+        }
 
-        const initializePlaceholder = async () => {
-          if (initialized) {
-            return
-          }
-
+        if (target.chatType === 'direct') {
           const chatCode = await ensureDirectChat(target.userId)
           const response = await client.api.createDirectMessage({
             chat_code: chatCode,
@@ -117,47 +146,121 @@ export function createSendService(client: KookClient, botName?: string): SendSer
           if (!messageId) {
             throw new Error(`Failed to create KOOK DM placeholder message for user ${target.userId}`)
           }
-          initialized = true
+        } else {
+          const response = await client.api.createMessage({
+            target_id: target.targetId,
+            content: buildTextCard(placeholder),
+            type: 10,
+            quote: replyToId,
+          })
+          messageId = response.data?.msg_id ?? null
+          if (!messageId) {
+            throw new Error(`Failed to create KOOK placeholder message for channel ${target.targetId}`)
+          }
         }
 
-        return {
-          async initialize() {
-            await initializePlaceholder()
-          },
+        initialized = true
+      }
 
-          async appendText(content) {
-            accumulatedContent += content
-            if (!messageId) {
-              await initializePlaceholder()
-            }
-            if (!messageId) {
-              throw new Error(`Missing KOOK DM placeholder message for user ${target.userId}`)
-            }
+      const sendFallbackText = async (text: string) => {
+        if (!text.trim()) {
+          return
+        }
+        await sendTextPayload(target, text, replyToId)
+      }
+
+      const markStreamingDisabled = async () => {
+        streamingDisabled = true
+
+        if (!messageId) {
+          return
+        }
+
+        const noticeCard = buildTextCard(fallbackNotice)
+        try {
+          if (target.chatType === 'direct') {
             await client.api.updateDirectMessage({
               msg_id: messageId,
-              content: buildTextCard(accumulatedContent),
+              content: noticeCard,
             })
-          },
-
-          async finalize() {},
+          } else {
+            await client.api.updateMessage({
+              msg_id: messageId,
+              content: noticeCard,
+              extra: {
+                type: 10,
+                target_id: target.targetId,
+              },
+            })
+          }
+        } catch {
+          // Ignore notice update errors and continue with plain-text fallback.
         }
       }
 
-      return new StreamingCard({
-        api: client.api,
-        targetId: target.targetId,
-        quoteMessageId: replyToId,
-        maxLength: 4500,
-        throttleMs: 300,
-        initialCard: (card) => {
-          card.addKMarkdownText(`*${displayName} 正在输入...*`)
-          return card
+      const updateExistingMessage = async () => {
+        if (!messageId) {
+          throw new Error(`Missing KOOK placeholder message for ${target.chatType} target ${target.targetId}`)
+        }
+
+        const cardContent = buildTextCard(accumulatedContent)
+        if (cardContent.length >= STREAM_CARD_MAX_LENGTH) {
+          await markStreamingDisabled()
+          await sendFallbackText(accumulatedContent)
+          return
+        }
+
+        if (target.chatType === 'direct') {
+          await client.api.updateDirectMessage({
+            msg_id: messageId,
+            content: cardContent,
+          })
+          return
+        }
+
+        await client.api.updateMessage({
+          msg_id: messageId,
+          content: cardContent,
+          extra: {
+            type: 10,
+            target_id: target.targetId,
+          },
+        })
+      }
+
+      return {
+        async initialize() {
+          await createPlaceholder()
         },
-        cardPreprocessor: (card) => {
-          card.undoLastAdd()
-          return card
+
+        async appendText(content) {
+          if (streamingDisabled) {
+            await sendFallbackText(content)
+            return
+          }
+
+          accumulatedContent += content
+          if (!messageId) {
+            await createPlaceholder()
+          }
+
+          const now = Date.now()
+          const waitMs = STREAM_UPDATE_THROTTLE_MS - (now - lastUpdateAt)
+          if (waitMs > 0) {
+            await sleep(waitMs)
+          }
+
+          try {
+            await updateExistingMessage()
+          } catch {
+            await markStreamingDisabled()
+            await sendFallbackText(accumulatedContent)
+          }
+          lastUpdateAt = Date.now()
         },
-      })
+
+        async finalize() {},
+      }
     },
 
     supportsStreaming(target) {

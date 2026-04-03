@@ -349,7 +349,7 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
     }
 
     // Dispatch reply
-    await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+    await runtime.channel.reply.dispatchReplyWithDispatcher({
       ctx: finalizedCtx,
       cfg,
       dispatcherOptions: {
@@ -380,9 +380,9 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
               return
             }
 
-            // Create streaming card if not yet created (fallback)
             if (!state.streamingCard) {
-              state.streamingCard = deps.createStreamingCard(replyTarget, event.msg_id)
+              await deps.deliverReply(replyTarget, text, event.msg_id)
+              return
             }
 
             // Append text as KMarkdown
