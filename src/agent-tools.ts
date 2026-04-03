@@ -5,7 +5,7 @@ import type { AnyAgentTool } from 'openclaw/plugin-sdk/core'
 
 import type { RestClient } from '@kookapp/js-sdk'
 
-import { getActiveClient, getFirstActiveClient } from './connection-manager'
+import { getActiveClient } from './connection-manager'
 
 // --- Action → RestClient method routing ---
 
@@ -77,6 +77,27 @@ async function handleUploadAsset(api: RestClient, params: { path: string; filena
 }
 
 const AVAILABLE_ACTIONS = [...Object.keys(ACTION_MAP), 'upload_asset'].sort().join(', ')
+const KOOK_TOOL_TIMEOUT_MS = 10_000
+const KOOK_UPLOAD_TIMEOUT_MS = 20_000
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeoutMessage: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(onTimeoutMessage))
+    }, timeoutMs)
+
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      },
+    )
+  })
+}
 
 const kookPlatformSchema = Type.Object({
   action: Type.String({
@@ -103,13 +124,36 @@ export function createKookPlatformToolFactory(): ToolFactory {
       parameters: kookPlatformSchema,
 
       async execute(_toolCallId, args) {
-        // Resolve client: prefer the account from context, fall back to first active
-        const client = ctx.agentAccountId ? getActiveClient(ctx.agentAccountId) : getFirstActiveClient()
+        if (!ctx.agentAccountId) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: 'Error: kook_platform requires a bound KOOK account context; refusing to fall back to another active client.',
+              },
+            ],
+            details: {
+              success: false,
+              reason: 'missing_agent_account_id',
+            },
+          }
+        }
+
+        const client = getActiveClient(ctx.agentAccountId)
 
         if (!client) {
           return {
-            content: [{ type: 'text' as const, text: 'Error: No active KOOK client found' }],
-            details: null,
+            content: [
+              {
+                type: 'text' as const,
+                text: `Error: No active KOOK client found for account ${ctx.agentAccountId}. The bot may be disconnected, the account context may be wrong, or the bot token may be invalid.`,
+              },
+            ],
+            details: {
+              success: false,
+              reason: 'inactive_or_missing_client',
+              accountId: ctx.agentAccountId,
+            },
           }
         }
 
@@ -127,20 +171,31 @@ export function createKookPlatformToolFactory(): ToolFactory {
         }
 
         try {
-          const result =
+          const timeoutMs = args.action === 'upload_asset' ? KOOK_UPLOAD_TIMEOUT_MS : KOOK_TOOL_TIMEOUT_MS
+          const result = await withTimeout(
             args.action === 'upload_asset'
-              ? await handleUploadAsset(client.api, args.params ?? {})
-              : await handler(client.api, args.params ?? {})
+              ? handleUploadAsset(client.api, args.params ?? {})
+              : handler(client.api, args.params ?? {}),
+            timeoutMs,
+            `KOOK API request timed out after ${timeoutMs}ms while executing ${args.action}`,
+          )
 
           if (!result.success) {
+            const isAuthError = result.code === 401 || /unauthorized|auth|token/i.test(String(result.message ?? ''))
             return {
               content: [
                 {
                   type: 'text' as const,
-                  text: `KOOK API error (code ${result.code}): ${result.message}`,
+                  text: isAuthError
+                    ? `KOOK API auth error (code ${result.code}): ${result.message}. Account=${ctx.agentAccountId}. This usually means the bound KOOK bot token is invalid, expired, missing permissions, or the request is being made under the wrong account context.`
+                    : `KOOK API error (code ${result.code}): ${result.message}`,
                 },
               ],
-              details: result,
+              details: {
+                ...result,
+                accountId: ctx.agentAccountId,
+                authError: isAuthError,
+              },
             }
           }
 

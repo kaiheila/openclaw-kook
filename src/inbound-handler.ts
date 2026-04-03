@@ -73,6 +73,7 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
   }
 
   async function handleTextChannelEventInner(event: KEvent<KTextChannelExtra>) {
+    const requestStartedAt = Date.now()
     // Always skip self messages
     if (event.author_id === botUserId) {
       return
@@ -333,6 +334,8 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
 
     const canStream = deps.supportsStreaming(replyTarget)
     const state: { streamingCard: StreamingMessageHandle | null } = { streamingCard: null }
+    let firstReplyBlockAt: number | null = null
+    let finalReplySentAt: number | null = null
 
     // Immediately send a "typing" placeholder card for supported targets only
     if (canStream) {
@@ -355,6 +358,10 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
             const text = payload.text
             if (!text) {
               return
+            }
+
+            if (firstReplyBlockAt === null) {
+              firstReplyBlockAt = Date.now()
             }
 
             // Record outbound activity
@@ -399,6 +406,14 @@ export function createInboundHandler(deps: InboundHandlerDeps) {
     } catch (err) {
       log?.error?.(`Failed to finalize streaming card: ${err}`)
     }
+
+    finalReplySentAt = Date.now()
+    const totalElapsedMs = finalReplySentAt - requestStartedAt
+    const llmElapsedMs = (firstReplyBlockAt ?? finalReplySentAt) - requestStartedAt
+    const llmSharePercent = totalElapsedMs > 0 ? Math.round((llmElapsedMs / totalElapsedMs) * 1000) / 10 : 0
+    log?.info?.(
+      `[timing] total=${totalElapsedMs}ms llm=${llmElapsedMs}ms llm_share=${llmSharePercent}% first_reply=${firstReplyBlockAt ?? 'n/a'} chatType=${chatType} accountId=${accountId}`,
+    )
 
     // Clear pending history after reply
     clearGroupHistory()
